@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoiceGrade AI — Система устных экзаменов</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f6f9; color: #333; margin: 0; padding: 20px; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        h1 { color: #6c63ff; text-align: center; margin-bottom: 30px; }
+        .section { margin-bottom: 25px; padding: 20px; border: 1px solid #eef2f5; border-radius: 8px; background: #fbfbfd; }
+        label { font-weight: bold; display: block; margin-bottom: 8px; }
+        input[type="text"], textarea { width: 100%; padding: 12px; box-sizing: border-box; border: 2px solid #ddd; border-radius: 6px; font-size: 16px; }
+        input[type="text"]:focus, textarea:focus { border-color: #6c63ff; outline: none; }
+        .btn-group { display: flex; gap: 10px; justify-content: center; margin-top: 15px; flex-wrap: wrap; }
+        button, .file-label { padding: 12px 24px; border: none; border-radius: 6px; cursor: pointer; font-size: 16px; font-weight: 600; }
+        .btn-primary { background: #6c63ff; color: white; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-danger { background: #dc3545; color: white; }
+        .file-label { background: #17a2b8; color: white; display: inline-block; text-align: center; }
+        .status { text-align: center; font-weight: bold; color: #555; margin: 15px 0; }
+        .box { background: #f0f4f8; padding: 15px; border-left: 5px solid #6c63ff; border-radius: 4px; margin-top: 10px; min-height: 40px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🎙️ VoiceGrade AI</h1>
+
+    <div class="section">
+        <label for="studentId">ID Студента:</label>
+        <input type="text" id="studentId" value="123">
+        <br><br>
+        <label for="examTopic">Тема экзамена:</label>
+        <input type="text" id="examTopic" value="История Казахстана">
+        
+        <div class="btn-group">
+            <button class="btn-primary" onclick="startExam()">Начать экзамен</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <label>Вопрос экзаменатора:</label>
+        <div id="questionBox" class="box">Нажмите «Начать экзамен», чтобы получить первый вопрос.</div>
+    </div>
+
+    <div class="section">
+        <label for="answerInput">Ваш ответ:</label>
+        <textarea id="answerInput" rows="4" placeholder="Здесь появится ваш ответ..."></textarea>
+        <div class="status" id="statusMessage">Статус: Готов к работе</div>
+
+        <div class="btn-group">
+            <button id="recordBtn" class="btn-primary" onclick="toggleRecord()">🔴 Запись с микрофона</button>
+            <label for="audioFile" class="file-label">📁 Загрузить файл диктофона</label>
+            <input type="file" id="audioFile" accept="audio/*" style="display: none;" onchange="uploadAudioFile(this)">
+            <button class="btn-success" onclick="sendAnswer()">Отправить ответ</button>
+            <button class="btn-danger" onclick="finishExam()">Завершить экзамен</button>
+        </div>
+        <div id="fileName" style="text-align: center; margin-top: 10px; color: #666;"></div>
+    </div>
+
+    <div class="section" id="analysisSection" style="display: none;">
+        <label>Итоговая оценка и анализ комиссии:</label>
+        <div id="analysisBox" class="box" style="white-space: pre-wrap;"></div>
+    </div>
+</div>
+
+<script>
+    const BACKEND_URL = 'http://localhost:3000';
+    let mediaRecorder, audioChunks = [], isRecording = false, examHistory = [];
+
+    async function startExam() {
+        const topic = document.getElementById('examTopic').value;
+        if (!topic) return alert('Введите тему!');
+        
+        examHistory = [];
+        document.getElementById('questionBox').innerText = 'ИИ думает над вопросом...';
+        document.getElementById('analysisSection').style.display = 'none';
+        document.getElementById('answerInput').value = '';
+
+        try {
+            const response = await fetch(`${BACKEND_URL}/api/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: 'question', topic: topic, history: examHistory })
+            });
+            const data = await response.json();
+            
+            if (response.ok && data.question) {
+                document.getElementById('questionBox').innerText = data.question;
+                examHistory.push({ role: 'assistant', content: data.question });
+            } else {
+                document.getElementById('questionBox').innerText = `❌ Ошибка бэкенда: ${data.error || 'Неизвестный сбой'}\nДетали: ${JSON.stringify(data.details || '')}`;
+            }
+        } catch (error) {
+            document.getElementById('questionBox').innerText = '❌ Нет связи с сервером Node.js. Убедись, что он запущен в терминале.';
+        }
+    }
+
+    async function toggleRecord() {
+        const recordBtn = document.getElementById('recordBtn');
+        const statusMessage = document.getElementById('statusMessage');
+        if (!isRecording) {
+            audioChunks = [];
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                let options = { mimeType: 'audio/webm;codecs=opus' };
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'audio/ogg;codecs=opus' };
+
+                mediaRecorder = new MediaRecorder(stream, options);
+                mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+                mediaRecorder.onstop = async () => {
+                    statusMessage.innerText = 'Статус: Распознавание речи...';
+                    await sendAudioBlob(new Blob(audioChunks, { type: options.mimeType }), 'microphone.webm');
+                };
+                mediaRecorder.start();
+                isRecording = true;
+                recordBtn.innerText = '⏹️ Остановить';
+                recordBtn.style.background = '#dc3545';
+            } catch (err) { alert('Микрофон недоступен: ' + err.message); }
+        } else {
+            mediaRecorder.stop();
+            isRecording = false;
+            recordBtn.innerText = '🔴 Запись с микрофона';
+            recordBtn.style.background = '#6c63ff';
+        }
+    }
+
+    async function uploadAudioFile(input) {
+        const file = input.files[0];
+        if (!file) return;
+        document.getElementById('fileName').innerText = `Файл: ${file.name}`;
+        await sendAudioBlob(file, file.name);
+    }
+
+    async function sendAudioBlob(blob, filename) {
+        const formData = new FormData();
+        formData.append('audio', blob, filename);
+        try {
+            const response = await fetch(`${BACKEND_URL}/api/stt`, { method: 'POST', body: formData });
+            const data = await response.json();
+            if (response.ok) {
+                document.getElementById('answerInput').value = data.text;
+                document.getElementById('statusMessage').innerText = 'Статус: Речь распознана!';
+            } else {
+                document.getElementById('statusMessage').innerText = '❌ Ошибка STT: ' + JSON.stringify(data.error);
+            }
+        } catch (e) { document.getElementById('statusMessage').innerText = '❌ Ошибка сети при STT'; }
+    }
+
+    async function sendAnswer() {
+        const answerText = document.getElementById('answerInput').value;
+        const topic = document.getElementById('examTopic').value;
+        if (!answerText) return alert('Введите ответ!');
+
+        examHistory.push({ role: 'user', content: answerText });
+        document.getElementById('questionBox').innerText = 'ИИ генерирует следующий вопрос...';
+        document.getElementById('answerInput').value = '';
+
+        try {
+            const response = await fetch(`${BACKEND_URL}/api/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: 'question', topic: topic, history: examHistory })
+            });
+            const data = await response.json();
+            if (response.ok && data.question) {
+                document.getElementById('questionBox').innerText = data.question;
+                examHistory.push({ role: 'assistant', content: data.question });
+            } else {
+                document.getElementById('questionBox').innerText = `❌ Ошибка: ${data.error}`;
+            }
+        } catch (e) { document.getElementById('questionBox').innerText = '❌ Ошибка сети.'; }
+    }
+
+    async function finishExam() {
+        const topic = document.getElementById('examTopic').value;
+        const studentId = document.getElementById('studentId').value;
+        const answersLog = examHistory.filter(h => h.role === 'user' || h.role === 'assistant');
+        if (answersLog.length === 0) return alert('Нет ответов!');
+
+        document.getElementById('statusMessage').innerText = 'Статус: Расчет оценок...';
+        try {
+            const response = await fetch(`${BACKEND_URL}/api/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: 'analyze', topic: topic, answers: answersLog, student_id: studentId })
+            });
+            const data = await response.json();
+            if (response.ok) {
+                document.getElementById('analysisSection').style.display = 'block';
+                document.getElementById('analysisBox').innerText = JSON.stringify(data, null, 2);
+                document.getElementById('statusMessage').innerText = 'Статус: Экзамен сохранен!';
+            } else {
+                document.getElementById('statusMessage').innerText = '❌ Ошибка анализа: ' + data.error;
+            }
+        } catch (e) { document.getElementById('statusMessage').innerText = '❌ Сбой сети при анализе'; }
+    }
+</script>
+</body>
+</html>
